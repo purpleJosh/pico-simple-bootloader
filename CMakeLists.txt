@@ -38,6 +38,7 @@ add_executable(${FLASHLOADER})
 
 target_sources(${FLASHLOADER} PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/flashloader.c
+        cycle_delay.S
         )
 
 target_link_libraries(${FLASHLOADER} PRIVATE
@@ -53,6 +54,7 @@ target_link_libraries(${FLASHLOADER} PRIVATE
         pico_platform
         pico_standard_link
         pico_divider
+        pico_stdlib
         )
 
 pico_add_uf2_output(${FLASHLOADER})
@@ -66,45 +68,45 @@ set_linker_script(${FLASHLOADER} memmap_flashloader.ld)
 
 set(FLASHLOADER_UF2 ${CMAKE_CURRENT_BINARY_DIR}/${FLASHLOADER}.uf2)
 
-################################################################################
-# Application (250ms blink rate)
-set(APP250 app250)
-
-add_executable(${APP250}
-        app.c
-        )
-
-target_compile_options(${APP250} PRIVATE -Os)
-target_compile_definitions(${APP250} PRIVATE LED_DELAY_MS=250)
-target_link_libraries(${APP250} pico_stdlib hardware_watchdog hardware_flash)
-
-pico_add_uf2_output(${APP250})
-pico_add_hex_output(${APP250})
-
-# Use a separate linker script for the application to make sure it is built
-# to run at the right location (after the flashloader).
-set_linker_script(${APP250} memmap_application.ld)
-
-set(APP250_UF2 ${CMAKE_CURRENT_BINARY_DIR}/${APP250}.uf2)
-
-################################################################################
-# Application (800ms blink rate)
-set(APP800 app800)
-
-add_executable(${APP800}
-        app.c
-        )
-
-target_compile_options(${APP800} PRIVATE -Os)
-target_compile_definitions(${APP800} PRIVATE LED_DELAY_MS=800)
-target_link_libraries(${APP800} pico_stdlib hardware_watchdog hardware_flash)
-
-pico_add_uf2_output(${APP800})
-pico_add_hex_output(${APP800})
-
-# Use a separate linker script for the application to make sure it is built
-# to run at the right location (after the flashloader).
-set_linker_script(${APP800} memmap_application.ld)
+#################################################################################
+## Application (250ms blink rate)
+#set(APP250 app250)
+#
+#add_executable(${APP250}
+#        app.c
+#        )
+#
+#target_compile_options(${APP250} PRIVATE -Os)
+#target_compile_definitions(${APP250} PRIVATE LED_DELAY_MS=250)
+#target_link_libraries(${APP250} pico_stdlib hardware_watchdog hardware_flash)
+#
+#pico_add_uf2_output(${APP250})
+#pico_add_hex_output(${APP250})
+#
+## Use a separate linker script for the application to make sure it is built
+## to run at the right location (after the flashloader).
+#set_linker_script(${APP250} memmap_application.ld)
+#
+#set(APP250_UF2 ${CMAKE_CURRENT_BINARY_DIR}/${APP250}.uf2)
+#
+#################################################################################
+## Application (800ms blink rate)
+#set(APP800 app800)
+#
+#add_executable(${APP800}
+#        app.c
+#        )
+#
+#target_compile_options(${APP800} PRIVATE -Os)
+#target_compile_definitions(${APP800} PRIVATE LED_DELAY_MS=800)
+#target_link_libraries(${APP800} pico_stdlib hardware_watchdog hardware_flash)
+#
+#pico_add_uf2_output(${APP800})
+#pico_add_hex_output(${APP800})
+#
+## Use a separate linker script for the application to make sure it is built
+## to run at the right location (after the flashloader).
+#set_linker_script(${APP800} memmap_application.ld)
 
 ################################################################################
 # Combine the flashloader and application into one flashable UF2 image

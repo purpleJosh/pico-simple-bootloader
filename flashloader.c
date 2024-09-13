@@ -35,6 +35,15 @@
 #include "pico/binary_info.h"
 #include "flashloader.h"
 
+// Including the stdlib.h file significantly increases the bootloader size
+// Would need to manually implement certain functions if we ever wanted to prevent this
+#include "pico/stdlib.h"
+
+
+// Not the best to include ws2812b.c directly
+// All header files MUST be included above this
+#include "ws2812b.c"
+
 bi_decl(bi_program_version_string("1.10"));
 
 #if !PICO_FLASH_SIZE_BYTES
@@ -51,7 +60,7 @@ extern void* __APPLICATION_START;
 // errors aren't because of some missing initialisation here so uncomment this
 // define to make the necessary changes here but don't forget to change the
 // start address for the application in the linker script!
-//#define USE_PICO_STDLIB
+#define USE_PICO_STDLIB
 
 #define flashoffset(x) (((uint32_t)x) - XIP_BASE)
 #define bl2crc(x)      (*((uint32_t*)(((uint32_t)(x) + 0xfc))))
@@ -66,8 +75,8 @@ static const uint32_t  sMaxRetries = 3;
 // DMA channel we use
 static const uint8_t sDMAChannel = 0;
 
-// Buffer to store a page's worth of data for flashing.
-// Must be aligned to a 256 byte boundary to allow use as a DMA ring buffer
+//// Buffer to store a page's worth of data for flashing.
+//// Must be aligned to a 256 byte boundary to allow use as a DMA ring buffer
 static uint8_t sPageBuffer[256] __attribute__ ((aligned(256)));
 
 
@@ -207,101 +216,28 @@ int startMainApplication()
         // need DMA and doesn't want to waste power)
         reset_block(RESETS_RESET_DMA_BITS);
 
+
+
+        // This is the where we jump to the application.
+        // Assembly is needed for things like setting the stack pointer
         asm volatile (
-        "mov r0, %[start]\n"
-        "ldr r1, =%[vtable]\n"
-        "str r0, [r1]\n"
-        "ldmia r0, {r0, r1}\n"
-        "msr msp, r0\n"
-        "bx r1\n"
-        :
+        "mov r0, %[start]\n" 
+        "ldr r1, =%[vtable]\n" 
+        "str r0, [r1]\n" 
+        "ldmia r0, {r0, r1}\n" 
+        "msr msp, r0\n" 
+        "bx r1\n" 
+        : 
         : [start] "r" (sStart + 0x100), [vtable] "X" (PPB_BASE + M0PLUS_VTOR_OFFSET)
-        :
+        : 
         );
+        // : outputs (none listed above)
+        // : inputs ......
+        // : list of clobbered registers (none listed above)
     }
 
     // We will only return if the main application couldn't be started
     return 0;
-}
-
-//****************************************************************************
-// Flash the main application using the provided image.
-void flashFirmware(const tFlashHeader* header, uint32_t eraseLength)
-{
-    uint32_t crc = 0;
-    uint32_t offset = 256;
-
-    // Start the watchdog and give us 500ms for each erase/write cycle.
-    // This should be more than enough time but in case anything happens,
-    // we'll reset and try again.
-    watchdog_reboot(0, 0, 500);
-
-    // Erase the target memory area
-    uint32_t start = flashoffset(sStart);
-
-    for(uint32_t sectors = eraseLength / FLASH_SECTOR_SIZE; sectors > 0; sectors--)
-    {
-        flash_range_erase(start, FLASH_SECTOR_SIZE);
-        start += FLASH_SECTOR_SIZE;
-        watchdog_update();
-    }
-
-    // Write everything except the first page.  If there's any kind
-    // of power failure during writing, this will prevent anything
-    // trying to boot the partially flashed image
-
-    // Get total number of pages - 1 (because we're flashing the first page
-    // separately)
-    uint32_t pages = ((header->length - 1) >> 8);
-
-    // Prepare the DMA channel for copying
-    copyPageInit(header->data + offset);
-
-    while(pages > 0)
-    {
-        // Reset the watchdog counter
-        watchdog_update();
-
-        // Copy the page to a RAM buffer so we're not trying to read from
-        // flash whilst writing to it
-        crc = copyPage();
-        flash_range_program(flashoffset(sStart + offset),
-                            sPageBuffer,
-                            256);
-        offset += 256;
-        pages--;
-    }
-
-    // Reset the watchdog counter
-    watchdog_update();
-
-    // Check that everything so far has been written correctly
-    if(crc == crc32(&header->data[256], offset - 256, 0xffffffff))
-    {
-        // Now flash the first page which is the boot2 image with CRC.
-        copyPageInit(header->data);
-        crc = copyPage();
-
-        flash_range_program(flashoffset(sStart),
-                            sPageBuffer,
-                            256);
-
-        // Reset the watchdog counter
-        watchdog_update();
-
-        if(crc == crc32(header->data, 256, 0xffffffff))
-        {
-            // Invalidate the start of the flash image to prevent it being
-            // picked up again (prevents cyclic flashing if the image is bad)
-            flash_range_erase(flashoffset(header), 4096);
-
-            // Indicate to the application that it has been updated
-            watchdog_hw->scratch[0] = FLASH_APP_UPDATED;
-        }
-    }
-
-    // Disable the watchdog
-    hw_clear_bits(&watchdog_hw->ctrl, WATCHDOG_CTRL_ENABLE_BITS);
 }
 
 //****************************************************************************
@@ -364,12 +300,16 @@ void initClock()
                 CLOCKS_CLK_SYS_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS);
 }
 
+
+#define PUSH_BUTTON_PIN 1
+bool is_button_pushed(){
+    return !gpio_get(PUSH_BUTTON_PIN);
+}
+
 //****************************************************************************
 int main(void)
 {
-    const tFlashHeader* header;
-    uint32_t eraseLength = 0;
-
+    
     uint32_t scratch = watchdog_hw->scratch[0];
     uint32_t image   = watchdog_hw->scratch[1];
 
@@ -378,7 +318,70 @@ int main(void)
 
     // Take DMA block out of reset so we can use it to calculate CRCs
     unreset_block_wait(RESETS_RESET_DMA_BITS);
+	
+    
+    // This is used purely for the LED code
+    /* 100MHz is a clean number and used to calculate the cycle delays */
+    set_sys_clock_khz(100000, true);
+	
+    /* Wait a bit to ensure clock is running and force LEDs to reset*/
+    sleep_ms(10);
 
+
+    bool leds_are_inited = false;
+    if ( is_button_pushed() ){
+        gpio_init(LED_PIN);
+        gpio_set_dir(LED_PIN, GPIO_OUT);
+        gpio_put(LED_PIN, false); /* Important to start low to tell the LEDs that it's time for new data */
+
+        leds_are_inited = true;
+
+        // One of the LEDs is turning on after we init
+        // This is a poor attempt to handle that, and
+        // results in the single LED only briefly flashing
+        for(int i = 0; i < 10; i++){
+            set_all(0, 0, 0);
+            send_led_data();
+            sleep_ms(1);
+        }
+        
+
+        int cnt_ms = 3000;
+        int step_ms = 150;
+        
+        while ( is_button_pushed() && cnt_ms > 0){
+            cnt_ms -= step_ms;
+            sleep_ms(step_ms);
+
+            if ( cnt_ms % (step_ms * 2) == 0 ){
+                // Flash the LEDs white at a lower brightness
+                set_all(20, 20, 20);
+            }
+            else{
+                // Turn the LEDs off
+                set_all(0, 0, 0);
+            }
+
+            // Actually sends the modified LED buffer to be displayed
+            send_led_data();
+        }
+
+        if ( cnt_ms < 1 ){
+            // Go into Bootsel instead of starting the application
+            set_all(20, 20, 20);
+            send_led_data();
+
+            reset_usb_boot(0, 0);
+            return 0;
+        }
+        else{
+            // Turn the LEDs off
+            set_all(0, 0, 0);
+            sleep_ms(1);
+            send_led_data();
+        }
+    }
+        
     if((scratch == FLASH_MAGIC1) && ((image & 0xfff) == 0) && (image > sStart))
     {
         // Invert the magic number (so we know we've been here) and
@@ -404,50 +407,26 @@ int main(void)
         watchdog_hw->scratch[2] = 0;
     }
 
-    while(image < (XIP_BASE + PICO_FLASH_SIZE_BYTES))
-    {
-        header = (const tFlashHeader*)image;
-
-        if((header->magic1 == FLASH_MAGIC1) &&
-           (header->magic2 == FLASH_MAGIC2) &&
-           (crc32(header->data, header->length, 0xffffffff) == header->crc32) &&
-           (crc32(header->data, 252, 0xffffffff) == bl2crc(header->data)))
-        {
-            // Round up erase length to next 4k boundary
-            eraseLength = (header->length + 4095) & 0xfffff000;
-
-            // Looks like we've found a valid image but only use it if we
-            // are sure that it won't get clobbered when we erase the flash
-            // before programming.
-            if((sStart + eraseLength) < (uint32_t)header)
-                break;
-            else
-                eraseLength = 0;
-        }
-
-        image += 0x1000;
-    }
-
-    // If we've found a new, valid image, go ahead and flash it!
-    if((eraseLength != 0) && (watchdog_hw->scratch[2] < sMaxRetries))
-    {
-        flashFirmware(header, eraseLength);
-
-        // Reboot into the new image
-        watchdog_reboot(0, 0, 50);
-
-        while(true)
-            tight_loop_contents();
-    }
-
-    // Something's gone wrong.  The main application is corrupt and/or
-    // there was a problem with the update image (or it couldn't be found).
+    
+    // Something's gone wrong.  The main application is corrupt
 
     // If we were originally explicitly triggered by a watchdog reset, try
     // to start the normal application since we didn't before
     if((scratch == FLASH_MAGIC1) || (scratch == ~FLASH_MAGIC1))
         startMainApplication();
 
-    // Otherwise go to the bootrom bootloader as a last resort
+    // Init the LEDs if they aren't already
+    if ( ! leds_are_inited ){
+        gpio_init(LED_PIN);
+        gpio_set_dir(LED_PIN, GPIO_OUT);
+        gpio_put(LED_PIN, false); /* Important to start low to tell the LEDs that it's time for new data */
+
+        leds_are_inited = true;
+    }
+
+    set_all(20, 20, 20);
+    sleep_ms(1);
+    send_led_data();
+
     reset_usb_boot(0, 0);
 }
